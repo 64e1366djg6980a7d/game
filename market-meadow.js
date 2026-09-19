@@ -4,6 +4,7 @@ const $ = (id) => document.getElementById(id);
 const svg = (body, view = "0 0 32 32") =>
   `<svg viewBox="${view}" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">${body}</svg>`;
 const icons = {
+  fish: svg('<path d="M7 16C13 4 24 8 28 16c-4 8-15 12-21 0L2 9v14z" fill="#528c91"/><circle cx="23" cy="14" r="1.4" fill="#173d38"/>'),
   sprout: svg(
     '<path d="M16 28V14C7 14 5 5 5 5s12-2 12 13C17 9 27 8 27 8s1 11-11 12" fill="currentColor"/><path d="M9 28h15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
   ),
@@ -44,7 +45,7 @@ const icons = {
     '<circle cx="16" cy="16" r="6" stroke="currentColor" stroke-width="1.5"/><path d="M16 3v3m0 20v3M3 16h3m20 0h3M7 7l2 2m14 14 2 2M7 25l2-2M23 9l2-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>',
   ),
   settings: svg(
-    '<path d="m13 4-1 4-4 1-3 4 2 4-1 4 4 3 4-1 3 3 4-2 1-4 4-2v-5l-4-2-1-4-4-1z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="16" cy="15" r="4" stroke="currentColor" stroke-width="1.8"/>',
+    '<path d="m13 3-.8 4-3 1.7-3.8-1.3-3 5.2 3 2.7v3.4l-3 2.7 3 5.2 3.8-1.3 3 1.7.8 4h6l.8-4 3-1.7 3.8 1.3 3-5.2-3-2.7v-3.4l3-2.7-3-5.2-3.8 1.3-3-1.7-.8-4z" transform="translate(2 0) scale(.88)" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="16" cy="15" r="4" stroke="currentColor" stroke-width="2"/>',
   ),
   help: svg(
     '<circle cx="16" cy="16" r="12" stroke="currentColor" stroke-width="1.8"/><path d="M12 12a4 4 0 0 1 8 0c0 3-4 3-4 6m0 3v1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
@@ -149,6 +150,12 @@ const PLOTS = [
     cost: 120,
   },
 ];
+PLOTS.push({ id: "lake", name: "Willow Lake", x: 23, z: 5, w: 12, d: 12, cost: 200, requires: ["orchard", "highland"] });
+const CARRY_LIMIT = 5;
+const ITEM_KEYS = ["grass", "wood", "stone", ...Object.keys(ITEMS), "fish"];
+const emptyBag = () => Object.fromEntries(ITEM_KEYS.map(k => [k, 0]));
+const countBag = bag => Object.values(bag).reduce((sum, n) => sum + n, 0);
+const plotUnlocked = plot => !plot.requires || plot.requires.every(id => G.land.includes(id));
 const NAMES = [
   "Milo",
   "Hazel",
@@ -184,6 +191,9 @@ function fresh() {
       milk: 0,
       candy: 0,
     },
+    storage: emptyBag(),
+    botInventory: emptyBag(),
+    nodeRemaining: {},
     land: [],
     served: 0,
     harvested: 0,
@@ -233,6 +243,22 @@ try {
 } catch {
   saveAvailable = false;
 }
+G.inventory = { ...emptyBag(), ...G.inventory };
+for (const field of ["inventory", "storage", "botInventory"]) {
+  const source = G[field];
+  G[field] = Object.fromEntries(ITEM_KEYS.map(k => [k, Number.isSafeInteger(source?.[k]) && source[k] >= 0 ? source[k] : 0]));
+}
+// Preserve legacy shared-bag stock by moving excess to the market, never discarding it.
+for (const bag of [G.inventory, G.botInventory]) {
+  let room = CARRY_LIMIT;
+  for (const k of ITEM_KEYS) {
+    const keep = Math.min(room, bag[k]);
+    G.storage[k] += bag[k] - keep;
+    bag[k] = keep;
+    room -= keep;
+  }
+}
+G.nodeRemaining = G.nodeRemaining && typeof G.nodeRemaining === "object" ? G.nodeRemaining : {};
 let orderID = Math.max(Date.now(), ...G.orders.map((o) => o.id));
 function newOrder(initial = false) {
   const count = G.orders.length;
@@ -283,6 +309,9 @@ let tick = 0,
   mouseDown = null,
   preview = false;
 let speechUntil = 0;
+const fishSpots = [];
+let fishing = null, captureHeld = false;
+const cameraPan = new THREE.Vector3();
 const nodes = [],
   interactables = [],
   npcs = new Map(),
@@ -400,7 +429,7 @@ function bake(group) {
 function textSprite(
   text,
   {
-    color = "#3f5a40",
+    color = "#173c2b",
     bg = "#fffff3",
     width = 5,
     scale = 1,
@@ -751,6 +780,7 @@ function createNode(type, x, z, plot = null) {
     plot,
     root,
     art,
+    remaining: Number.isInteger(G.nodeRemaining[id]) && G.nodeRemaining[id] > 0 && G.nodeRemaining[id] <= 3 ? G.nodeRemaining[id] : 3,
     cooldown: Math.max(0, Number(G.cooldowns[id]) || 0),
     reserved: null,
   };
@@ -777,7 +807,28 @@ function buildPlot(plot) {
   const g = new THREE.Group();
   scene.add(g);
   plot.group = g;
-  rounded(plot.w, 0.018, plot.d, 0.35, 0xc3cbaa, g, plot.x, 0.027, plot.z);
+  if (plot.id === "lake") {
+    rounded(14, 1.35, 17, 1, 0xc1b495, g, 23, -1.48, 4.5);
+    rounded(14, 0.22, 17, 1, 0xa7b780, g, 23, -0.2, 4.5);
+    rounded(14, 0.12, 17, 1, 0xbac991, g, 23, -0.09, 4.5);
+    const water = new THREE.Mesh(new THREE.CircleGeometry(1, 40), new THREE.MeshBasicMaterial({ color: 0x80b8b7 }));
+    water.rotation.x = -Math.PI / 2;
+    water.scale.set(4.5, 3.6, 1);
+    water.position.set(23, 0.07, 5);
+    g.add(water);
+    for (const [dx, dz] of [[-2, 0], [1, -1.4], [2, 1.4]]) {
+      const art = new THREE.Group();
+      g.add(art);
+      art.position.set(23 + dx, 0.16, 5 + dz);
+      ball(0.23, 0x365e62, art).scale.set(1.8, 0.25, 0.8);
+      cylinder(0, 0.2, 0.35, 0x365e62, art, -0.4, 0, 0, 3).rotation.z = Math.PI / 2;
+      const spot = { x: 23 + dx, z: 5 + dz, art, cooldown: 0 };
+      fishSpots.push(spot);
+      art.userData.target = { type: "fish", spot, label: "Fish · Wade close, then hold Capture", x: spot.x, z: spot.z };
+      interactables.push(art);
+      bake(art);
+    }
+  } else rounded(plot.w, 0.018, plot.d, 0.35, 0xc3cbaa, g, plot.x, 0.027, plot.z);
   fence(g, plot.x, plot.z + plot.d / 2, plot.w);
   fence(g, plot.x - plot.w / 2, plot.z, plot.d, false);
   fence(g, plot.x + plot.w / 2, plot.z, plot.d, false);
@@ -803,7 +854,7 @@ function buildPlot(plot) {
   );
   const sign = textSprite(`${plot.cost} coins · Grow here`, {
     width: 4.6,
-    color: "#607452",
+    color: "#354c2c",
     bg: "#faf5df",
     small: true,
   });
@@ -818,21 +869,23 @@ function buildPlot(plot) {
     z: plot.z - plot.d / 2 - 0.65,
   };
   interactables.push(g);
-  bake(g);
-  for (const [type, dx, dz] of [
+  if (plot.id !== "lake") bake(g);
+  for (const [type, dx, dz] of (plot.id === "lake" ? [["wood", -5, 2], ["grass", 5, -2], ["stone", -5, -2]] : [
     ["wood", -3, 0],
     ["wood", 2.8, 0.3],
     ["grass", -0.8, -0.8],
     ["grass", 1.3, 0.9],
     ["stone", -2, 1.1],
     ["stone", 3, -1],
-  ])
+  ]))
     createNode(type, plot.x + dx, plot.z + dz, plot.id);
   updatePlot(plot);
 }
 function updatePlot(plot) {
   const owned = G.land.includes(plot.id);
+  plot.group.visible = plotUnlocked(plot);
   plot.sign.visible = !owned;
+  if (plot.id === "lake") fishSpots.forEach(f => { f.art.visible = owned && f.cooldown <= 0; });
   plot.group.userData.target.disabled = owned;
   nodes
     .filter((n) => n.plot === plot.id)
@@ -992,7 +1045,7 @@ function buildWorld() {
   crate(checkout, -1.3, 1.3, 0, "tomato");
   const sign = textSprite("Your little market", {
     width: 5.2,
-    color: "#466148",
+    color: "#173c2b",
   });
   sign.position.set(0, 3.42, 0);
   checkout.add(sign);
@@ -1023,7 +1076,7 @@ function buildWorld() {
   const meadowSign = textSprite("THE MEADOW", {
     width: 3.3,
     small: true,
-    color: "#829164",
+    color: "#354c2c",
     bg: "#f8f5dc",
   });
   meadowSign.position.set(-9, 0.72, 5.9);
@@ -1113,7 +1166,9 @@ function resize() {
   camera.updateProjectionMatrix();
 }
 function canWalk(x, z) {
-  if (x < -16 || x > 16 || z < -12.8 || z > 13) return false;
+  const original = x >= -16 && x <= 16 && z >= -12.8 && z <= 13;
+  const extension = plotUnlocked(PLOTS.find(p => p.id === "lake")) && x >= 16 && x <= 29.5 && z >= -3.5 && z <= 12.5;
+  if (!original && !extension) return false;
   if (
     PLOTS.some(
       (p) =>
@@ -1137,7 +1192,7 @@ function findPath(from, to) {
   const step = 0.65,
     xmin = -16.25,
     zmin = -13,
-    cols = 51,
+    cols = 72,
     rows = 41;
   const cell = (x, z) => [
     Math.round((x - xmin) / step),
@@ -1258,13 +1313,49 @@ function navigate(actor, target, job = null) {
 function nodeReady(n) {
   return n.root.visible && n.cooldown <= 0 && !n.reserved;
 }
-function affordable(item, amount = 1) {
-  return Object.entries(ITEMS[item].cost).every(
-    ([k, v]) => G.inventory[k] >= v * amount,
-  );
+function actorBag(actor = player) { return actor === bot ? G.botInventory : G.inventory; }
+function marketCount(k, actor = player) { return G.storage[k] + actorBag(actor)[k]; }
+function atMarket(actor) { return Math.hypot(actor.position.x - 8, actor.position.z - 4.1) <= 2.5; }
+function affordable(item, amount = 1, actor = player) {
+  return !!ITEMS[item] && Number.isInteger(amount) && amount > 0 && amount <= CARRY_LIMIT &&
+    Object.entries(ITEMS[item].cost).every(([k, v]) => actorBag(actor)[k] >= v * amount);
 }
-function canServe(order) {
-  return Object.entries(order.needs).every(([k, v]) => G.inventory[k] >= v);
+function canServe(order, actor = player) {
+  return Object.entries(order.needs).every(([k, v]) => marketCount(k, actor) >= v);
+}
+function deposit(actor) {
+  if (!atMarket(actor)) return "Walk to Your little market to store items.";
+  const bag = actorBag(actor), amount = countBag(bag);
+  for (const k of ITEM_KEYS) { G.storage[k] += bag[k]; bag[k] = 0; }
+  updateUI(); save();
+  return `Stored ${amount} items at Your little market.`;
+}
+function withdraw(item, amount = 1, actor = player) {
+  if (!atMarket(actor)) return "Walk to Your little market to collect stored items.";
+  const bag = actorBag(actor);
+  if (!ITEM_KEYS.includes(item) || !Number.isInteger(amount) || amount < 1 || G.storage[item] < amount) return "Not enough stored stock.";
+  if (countBag(bag) + amount > CARRY_LIMIT) return "Hands full: carry at most 5 items. Store some first.";
+  G.storage[item] -= amount; bag[item] += amount;
+  updateUI(); save();
+  return `Collected ${amount} ${item} from market storage.`;
+}
+function consumeMarket(needs, actor) {
+  const bag = actorBag(actor);
+  for (const [k, v] of Object.entries(needs)) {
+    const fromHand = Math.min(bag[k], v);
+    bag[k] -= fromHand; G.storage[k] -= v - fromHand;
+  }
+}
+function updateCarry(actor) {
+  if (!actor) return;
+  const count = countBag(actorBag(actor));
+  if (!actor.userData.carry) {
+    const group = new THREE.Group();
+    actor.add(group); actor.userData.carry = group;
+    for (let i = 0; i < CARRY_LIMIT; i++) box(0.3, 0.22, 0.3, 0xc1a174, group, (i % 2 - 0.5) * 0.32, 0.7 + Math.floor(i / 2) * 0.23, 0.6);
+  }
+  actor.userData.carry.children.forEach((part, i) => { part.visible = i < count; });
+  actor.userData.carry.visible = count > 0;
 }
 function record(text) {
   G.journal.push({ day: 1 + Math.floor(G.time / 300), text });
@@ -1284,11 +1375,18 @@ function speak(text) {
 }
 let audioContext = null,
   soundEnabled = false;
+try { soundEnabled = localStorage.getItem("market-meadow-sound") === "on"; } catch {}
+function updateSoundButton() {
+  $("sound").innerHTML = icons[soundEnabled ? "soundOn" : "soundOff"];
+  $("sound").setAttribute("aria-pressed", String(soundEnabled));
+  $("sound").setAttribute("aria-label", soundEnabled ? "Mute sound" : "Turn sound on");
+  $("sound").title = soundEnabled ? "Mute sound" : "Turn sound on";
+}
 function sound(kind = "gather") {
   if (!soundEnabled) return;
   try {
     audioContext ??= new (window.AudioContext || window.webkitAudioContext)();
-    audioContext.resume();
+    audioContext.resume().catch(() => {});
     const notes =
       kind === "coin"
         ? [660, 880, 1100]
@@ -1327,30 +1425,30 @@ function burst(x, z, color = 0xeac568) {
     });
   }
 }
-function collectNode(n, actor) {
-  if (n.cooldown > 0 || !n.root.visible)
-    return "That resource is regrowing. Try another patch.";
-  G.inventory[n.type] += 3;
-  renderer.shadowMap.needsUpdate = true;
-  G.harvested += 3;
-  n.cooldown = n.type === "grass" ? 24 : n.type === "wood" ? 42 : 38;
-  G.cooldowns[n.id] = n.cooldown;
-  n.art.scale.setScalar(0.12);
+function collectNode(n, actor, requested = 3) {
+  if (n.cooldown > 0 || !n.root.visible) return "That resource is regrowing. Try another patch.";
+  const bag = actorBag(actor), amount = Math.min(n.remaining, requested, CARRY_LIMIT - countBag(bag));
+  if (amount <= 0) return "Hands full: carry at most 5 items. Store them at Your little market.";
+  bag[n.type] += amount;
+  G.harvested += amount;
+  n.remaining -= amount;
   n.reserved = null;
-  burst(
-    n.x,
-    n.z,
-    n.type === "stone" ? 0xbfc6b0 : n.type === "wood" ? 0xd0ae72 : 0xb5c98b,
-  );
-  record(`Gathered 3 ${n.type}${actor === bot ? " with Pip" : ""}.`);
-  sound();
-  toast(`+3 ${n.type}${actor === bot ? " · Thanks, Pip!" : ""}`);
-  updateUI();
-  save();
-  return `Gathered 3 ${n.type}. You now have ${G.inventory[n.type]}.`;
+  if (!n.remaining) {
+    n.cooldown = n.type === "grass" ? 24 : n.type === "wood" ? 42 : 38;
+    n.remaining = 3;
+    n.art.scale.setScalar(0.12);
+    renderer.shadowMap.needsUpdate = true;
+  }
+  G.nodeRemaining[n.id] = n.remaining;
+  G.cooldowns[n.id] = n.cooldown;
+  burst(n.x, n.z, n.type === "stone" ? 0xbfc6b0 : n.type === "wood" ? 0xd0ae72 : 0xb5c98b);
+  record(`Gathered ${amount} ${n.type}${actor === bot ? " with Pip" : ""}.`);
+  sound(); toast(`+${amount} ${n.type} · ${countBag(bag)}/5 carried`);
+  updateUI(); save();
+  return `Gathered ${amount} ${n.type}. Carrying ${countBag(bag)}/5.`;
 }
 function trade(item, amount = 1, actor = player) {
-  if (!affordable(item, amount)) {
+  if (!affordable(item, amount, actor)) {
     sound("error");
     return `Not enough resources for ${amount} ${ITEMS[item].name.toLowerCase()}. Need ${Object.entries(
       ITEMS[item].cost,
@@ -1358,27 +1456,30 @@ function trade(item, amount = 1, actor = player) {
       .map(([k, v]) => `${v * amount} ${k}`)
       .join(" + ")}.`;
   }
-  for (const [k, v] of Object.entries(ITEMS[item].cost))
-    G.inventory[k] -= v * amount;
-  G.inventory[item] += amount;
+  const bag = actorBag(actor);
+  const costCount = Object.values(ITEMS[item].cost).reduce((sum, n) => sum + n, 0) * amount;
+  if (countBag(bag) - costCount + amount > CARRY_LIMIT) return "Hands full: store items at your market first.";
+  for (const [k, v] of Object.entries(ITEMS[item].cost)) bag[k] -= v * amount;
+  bag[item] += amount;
   G.traded += amount;
   record(
     `Traded resources for ${amount} ${ITEMS[item].name.toLowerCase()}${actor === bot ? " with Pip" : ""}.`,
   );
   sound();
   burst(actor.position.x, actor.position.z);
-  toast(`+${amount} ${ITEMS[item].name} · In your shared bag`);
+  toast(`+${amount} ${ITEMS[item].name} · ${countBag(bag)}/5 carried`);
   updateUI();
   save();
-  return `Fetched ${amount} ${ITEMS[item].name.toLowerCase()} into your shared bag. Stock: ${G.inventory[item]}.`;
+  return `Fetched ${amount} ${ITEMS[item].name.toLowerCase()}. Carrying ${countBag(bag)}/5.`;
 }
 function serve(id, actor = player) {
   const index = G.orders.findIndex((o) => o.id === id),
     order = G.orders[index];
   if (!order) return "That customer has already been served.";
-  if (!canServe(order))
+  if (!atMarket(actor)) return "Walk to Your little market to serve customers.";
+  if (!canServe(order, actor))
     return "The order is not ready. Collect every requested item first.";
-  for (const [k, v] of Object.entries(order.needs)) G.inventory[k] -= v;
+  consumeMarket(order.needs, actor);
   G.coins += order.reward;
   G.served++;
   G.orders.splice(index, 1);
@@ -1405,7 +1506,8 @@ function serve(id, actor = player) {
   return `Served ${order.name} and collected ${order.reward} coins. Balance: ${G.coins}.`;
 }
 function buyLand(plot) {
-  if (G.land.includes(plot.id)) return;
+  if (!plot || G.land.includes(plot.id)) return "That land is already owned.";
+  if (!plotUnlocked(plot)) { toast("Buy both the orchard and Sunstone garden first.", true); return "Buy both original properties first."; }
   if (G.coins < plot.cost) {
     toast(`Save ${plot.cost - G.coins} more coins to grow here.`, true);
     return;
@@ -1413,7 +1515,7 @@ function buyLand(plot) {
   G.coins -= plot.cost;
   G.land.push(plot.id);
   renderer.shadowMap.needsUpdate = true;
-  updatePlot(plot);
+  PLOTS.forEach(updatePlot);
   for (const n of nodes.filter((n) => n.plot === plot.id))
     burst(n.x, n.z, 0xd6df9d);
   record(`Bought ${plot.name} for ${plot.cost} coins.`);
@@ -1422,6 +1524,7 @@ function buyLand(plot) {
   $("shop-dialog").close();
   updateUI();
   save();
+  return `Bought ${plot.name} for ${plot.cost} coins.`;
 }
 function spawnNPC(order, initial = false) {
   const npc = character(
@@ -1458,12 +1561,14 @@ function portrait(order) {
 }
 function updateUI() {
   for (const k of Object.keys(G.inventory)) {
-    $(`${k}-count`).textContent = G.inventory[k];
+    if ($(`${k}-count`)) $(`${k}-count`).textContent = G.inventory[k];
     if (ITEMS[k])
       document
         .querySelector(`[data-item="${k}"]`)
         .classList.toggle("stocked", G.inventory[k] > 0);
   }
+  updateCarry(player); updateCarry(bot);
+  if ($("carry-status")) $("carry-status").textContent = `You ${countBag(G.inventory)}/5 · Pip ${countBag(G.botInventory)}/5 · Stored ${countBag(G.storage)} · Fish ${G.inventory.fish}`;
   $("coins").textContent = G.coins;
   $("day").textContent = 1 + Math.floor(G.time / 300);
   $("order-count").textContent = G.orders.length;
@@ -1476,7 +1581,7 @@ function updateUI() {
         )
           .map(
             ([k, v]) =>
-              `<span class="need ${G.inventory[k] >= v ? "have" : ""}" title="${ITEMS[k].name}: ${G.inventory[k]} / ${v}">${icons[k]} ${v}</span>`,
+              `<span class="need ${marketCount(k) >= v ? "have" : ""}" title="${ITEMS[k].name}: ${marketCount(k)} / ${v}">${icons[k]} ${v}</span>`,
           )
           .join(
             "",
@@ -1539,7 +1644,7 @@ function updateUI() {
 function save() {
   if (!player) return;
   G.player = { x: player.position.x, z: player.position.z };
-  for (const n of nodes) G.cooldowns[n.id] = n.cooldown;
+  for (const n of nodes) { G.cooldowns[n.id] = n.cooldown; G.nodeRemaining[n.id] = n.remaining; }
   try {
     localStorage.setItem(SAVE, JSON.stringify(G));
     saveAvailable = true;
@@ -1574,7 +1679,7 @@ function renderShop() {
   if (activeShop) {
     const shop = SHOPS[activeShop],
       items = Object.keys(ITEMS).filter((k) => ITEMS[k].shop === activeShop);
-    root.innerHTML = `<div class="shop-banner" style="--shop-bg:${activeShop === "dairy" ? "#dfebdf" : activeShop === "pantry" ? "#f0e0ce" : "#e8efd9"}">${items.map((k) => icons[k]).join("")}</div><div class="eyebrow">${shop.tag}</div><h2>${esc(shop.name)}</h2><p>Good food, fair trades. Everything goes into the bag you share with Pip.</p>${items
+    root.innerHTML = `<div class="shop-banner" style="--shop-bg:${activeShop === "dairy" ? "#dfebdf" : activeShop === "pantry" ? "#f0e0ce" : "#e8efd9"}">${items.map((k) => icons[k]).join("")}</div><div class="eyebrow">${shop.tag}</div><h2>${esc(shop.name)}</h2><p>Trade resources in your hands. You and Pip each carry at most 5 items. Store extras at Your little market.</p>${items
       .map(
         (k) =>
           `<div class="shop-item"><span>${icons[k]}</span><div class="shop-item-info"><strong>${ITEMS[k].name}</strong><div class="shop-cost">${Object.entries(
@@ -1593,7 +1698,7 @@ function renderShop() {
       )}<p class="shop-note">Resources are your currency here. Save coins to buy new land.</p>`;
   } else if (activePlot) {
     const p = activePlot;
-    root.innerHTML = `<div class="shop-banner">${icons.sprout}</div><div class="eyebrow">A LITTLE MORE ROOM TO GROW</div><h2>${esc(p.name)}</h2><p>A fresh patch of possibility, with six new resource spots that regrow over time.</p><div class="land-benefits"><span>${icons.wood}2 trees</span><span>${icons.grass}2 grass patches</span><span>${icons.stone}2 stone deposits</span></div><div class="dialog-actions"><strong>${p.cost} coins <small style="color:#929e84;font-weight:400">· You have ${G.coins}</small></strong><button class="primary" data-buy-land="${p.id}" ${G.coins < p.cost ? "disabled" : ""}>Make it yours</button></div>`;
+    root.innerHTML = `<div class="shop-banner">${icons.sprout}</div><div class="eyebrow">A LITTLE MORE ROOM TO GROW</div><h2>${esc(p.name)}</h2><p>${p.id === "lake" ? "A peaceful lake with fish and new resources. Buy it, wade into the water, and hold Capture near a fish." : "A fresh patch of possibility, with six new resource spots that regrow over time."}</p><div class="land-benefits"><span>${icons.wood}2 trees</span><span>${icons.grass}2 grass patches</span><span>${icons.stone}2 stone deposits</span></div><div class="dialog-actions"><strong>${p.cost} coins <small style="color:#929e84;font-weight:400">· You have ${G.coins}</small></strong><button class="primary" data-buy-land="${p.id}" ${G.coins < p.cost || !plotUnlocked(p) ? "disabled" : ""}>Make it yours</button></div>`;
   } else if (activeCustomer) {
     const o = G.orders.find((o) => o.id === activeCustomer);
     if (!o) {
@@ -1611,13 +1716,13 @@ function renderShop() {
     )
       .map(
         ([k, v]) =>
-          `<div class="checkout-row"><span>${icons[k]}</span><div>${ITEMS[k].name}<small>${G.inventory[k]} in your bag · ${v} needed<br>${esc(SHOPS[ITEMS[k].shop].name)}</small></div><button class="primary" data-visit="${ITEMS[k].shop}">Visit shop</button></div>`,
+          `<div class="checkout-row"><span>${icons[k]}</span><div>${ITEMS[k].name}<small>${marketCount(k)} in your hands + market storage · ${v} needed<br>${esc(SHOPS[ITEMS[k].shop].name)}</small></div><button class="primary" data-visit="${ITEMS[k].shop}">Visit shop</button></div>`,
       )
       .join(
         "",
       )}</div><div class="dialog-actions"><button class="text-button" data-promise="${o.id}">"I'll get that for you!"</button><button class="primary" data-serve="${o.id}" ${canServe(o) ? "" : "disabled"}>Sell for ${o.reward} coins</button></div>`;
   } else {
-    root.innerHTML = `<div class="shop-banner">${icons.bag}${icons.coin}</div><div class="eyebrow">GOOD FOOD. HAPPY NEIGHBORS.</div><h2>Your little market</h2><p>Fulfill an order to sell from your bag and collect payment.</p><div class="checkout-list">${G.orders
+    root.innerHTML = `<div class="shop-banner">${icons.bag}${icons.coin}</div><div class="eyebrow">GOOD FOOD. HAPPY NEIGHBORS.</div><h2>Your little market</h2><p>Sell from your hands or market storage. Pip must bring his stock here first.</p><div class="checkout-list">${G.orders
       .map(
         (o) =>
           `<div class="checkout-row">${portrait(o)}<div>${esc(o.name)}<small>${Object.entries(
@@ -1625,7 +1730,7 @@ function renderShop() {
           )
             .map(
               ([k, v]) =>
-                `${v} ${ITEMS[k].name.toLowerCase()} (${G.inventory[k]}/${v})`,
+                `${v} ${ITEMS[k].name.toLowerCase()} (${marketCount(k)}/${v})`,
             )
             .join(
               " · ",
@@ -1633,13 +1738,14 @@ function renderShop() {
       )
       .join(
         "",
-      )}</div><p class="shop-note">Ask Pip to "checkout" and he'll serve all the orders you have stock for.</p>`;
+      )}</div><h3>Market storage</h3><p>You: ${countBag(G.inventory)}/5 · Pip: ${countBag(G.botInventory)}/5. Storage has no carrying limit.</p><button class="primary" data-store="all">Store everything in my hands</button>${ITEM_KEYS.map(k => `<div class="checkout-row"><span>${icons[k]}</span><div>${ITEMS[k]?.name || k}<small>${G.storage[k]} stored · ${G.inventory[k]} in your hands</small></div><button class="primary" data-withdraw="${k}" ${!G.storage[k] || countBag(G.inventory) >= CARRY_LIMIT ? "disabled" : ""}>Take 1</button></div>`).join("")}<button class="primary" data-sell-fish="1" ${marketCount("fish") ? "" : "disabled"}>Sell 1 fish · 10 coins</button><p class="shop-note">Ask Pip to "store all", "cut tree 3", "break stone 2", "buy eggs", or "checkout". Bot trades use market storage, not your hands.</p>`;
   }
 }
 function interact(target) {
   if (!target || target.disabled || replay) return;
   if (target.type === "resource") {
     const n = target.node;
+    if (countBag(G.inventory) >= CARRY_LIMIT) { toast("Hands full (5/5). Store items at Your little market.", true); return; }
     if (!nodeReady(n)) {
       toast(
         n.reserved
@@ -1657,6 +1763,10 @@ function interact(target) {
     promise.then((result) => {
       if (/reachable/.test(result)) toast(result, true);
     });
+  } else if (target.type === "fish") {
+    if (!G.land.includes("lake")) { toast("Buy Willow Lake first.", true); return; }
+    navigate(player, { x: target.x, z: target.z + 0.6 });
+    toast("Wade close to the fish, then hold Capture (or F) until caught.");
   } else if (target.type === "shop") {
     toast(`On the way to ${SHOPS[target.key].name}`);
     navigate(player, target, { type: "openShop", key: target.key });
@@ -1695,14 +1805,16 @@ function finishJob(actor) {
     return;
   }
   let result = "Arrived.";
-  if (job?.type === "harvest") result = collectNode(job.node, actor);
+  if (job?.type === "harvest") result = collectNode(job.node, actor, job.amount ?? 3);
+  else if (job?.type === "deposit") result = deposit(actor);
+  else if (job?.type === "buyLand") result = buyLand(job.plot);
   else if (job?.type === "openShop") showDialog("shop", job.key);
   else if (job?.type === "openCheckout") showDialog("checkout");
   else if (job?.type === "openPlot") showDialog("plot", job.plot);
   else if (job?.type === "checkout") {
     if (job.id) result = serve(job.id, actor);
     else {
-      const ready = G.orders.filter(canServe);
+      const ready = G.orders.filter(o => canServe(o, actor));
       result = ready.length
         ? ready.map((o) => serve(o.id, actor)).join(" ")
         : "No orders are ready yet. Gather and trade for the missing products first.";
@@ -1770,9 +1882,9 @@ async function executeAction(action) {
     autoFollow = false;
     cancelActor(bot);
     botTask = "Taking a little break";
-    if (bot.userData.carry) bot.userData.carry.visible = false;
+    updateCarry(bot);
     updateUI();
-    return "Pip stopped. Any completed trades stay in your bag.";
+    return "Pip stopped. Carried items stay in Pip's hands; ask him to store all when ready.";
   }
   const generation = ++botGeneration;
   autoFollow = action.type === "follow";
@@ -1786,63 +1898,55 @@ async function executeAction(action) {
   let result = "";
   cancelActor(bot);
   try {
-    if (action.type === "harvest") {
+    if (action.type === "store") {
+      botTask = "Storing items at your market";
+      result = await navigate(bot, { x: 8, z: 4.1 }, { type: "deposit" });
+    } else if (action.type === "buyLand") {
+      const plot = PLOTS.find(p => p.id === action.plot);
+      if (!plot || !plotUnlocked(plot)) return "Buy both original properties before unlocking Willow Lake.";
+      if (G.land.includes(plot.id)) return "That property is already yours.";
+      if (G.coins < plot.cost) return `Need ${plot.cost - G.coins} more coins.`;
+      result = await navigate(bot, plot.group.userData.target, { type: "buyLand", plot });
+    } else if (action.type === "harvest") {
+      if (!Number.isInteger(action.amount) || action.amount < 1 || action.amount > CARRY_LIMIT) return "Gather 1 to 5 items per command.";
       botTask = `Gathering ${action.resource}`;
-      for (let i = 0; i < action.amount; i++) {
-        if (generation !== botGeneration) break;
-        const node = nodes
-          .filter((n) => n.type === action.resource && nodeReady(n))
-          .sort(
-            (a, b) =>
-              Math.hypot(a.x - bot.position.x, a.z - bot.position.z) -
-              Math.hypot(b.x - bot.position.x, b.z - bot.position.z),
-          )[0];
-        if (!node) {
-          result += ` No ${action.resource} is ready. Resources regrow in under a minute.`;
-          break;
-        }
-        speak(`A little ${action.resource}, coming up!`);
-        const task = navigate(
-          bot,
-          { x: node.x, z: node.z + 0.8 },
-          { type: "harvest", node },
-        );
-        result += ` ${await task}`;
+      if (countBag(G.botInventory)) {
+        await navigate(bot, { x: 8, z: 4.1 }, { type: "deposit" });
+        if (generation !== botGeneration || countBag(G.botInventory)) return "Task stopped before gathering.";
+      }
+      let remaining = action.amount;
+      while (remaining > 0 && generation === botGeneration) {
+        const node = nodes.filter(n => n.type === action.resource && nodeReady(n))
+          .sort((a, b) => Math.hypot(a.x - bot.position.x, a.z - bot.position.z) - Math.hypot(b.x - bot.position.x, b.z - bot.position.z))[0];
+        if (!node) { result += " No more resources are ready. They regrow in under a minute."; break; }
+        const before = G.botInventory[action.resource];
+        const report = await navigate(bot, { x: node.x, z: node.z + 0.8 }, { type: "harvest", node, amount: remaining });
+        result += " " + report;
+        const gathered = G.botInventory[action.resource] - before;
+        if (gathered <= 0) break;
+        remaining -= gathered;
+      }
+      if (generation === botGeneration && countBag(G.botInventory)) {
+        botTask = "Carrying resources to storage";
+        result += " " + await navigate(bot, { x: 8, z: 4.1 }, { type: "deposit" });
       }
     } else if (action.type === "deliver") {
-      botTask = `Fetching ${ITEMS[action.item].name.toLowerCase()}`;
-      const shop = SHOPS[ITEMS[action.item].shop];
-      if (!affordable(action.item, action.amount))
-        return `Need ${Object.entries(ITEMS[action.item].cost)
-          .map(([k, v]) => `${v * action.amount} ${k} (have ${G.inventory[k]})`)
-          .join(", ")} to fetch those products.`;
-      speak("One little delivery, coming up.");
-      result = await navigate(
-        bot,
-        { x: shop.x, z: -4.6 },
-        { type: "trade", item: action.item, amount: action.amount },
-      );
-      if (generation === botGeneration && result.startsWith("Fetched")) {
-        if (!bot.userData.carry) {
-          bot.userData.carry = new THREE.Group();
-          bot.add(bot.userData.carry);
-          box(0.65, 0.45, 0.45, 0xc1a174, bot.userData.carry, 0, 0.75, 0.6);
-          for (let i = 0; i < 3; i++)
-            box(
-              0.67,
-              0.025,
-              0.035,
-              0xe3c394,
-              bot.userData.carry,
-              0,
-              0.58 + i * 0.13,
-              0.84,
-            );
-        }
-        bot.userData.carry.visible = true;
+      if (!ITEMS[action.item] || !Number.isInteger(action.amount) || action.amount < 1 || action.amount > CARRY_LIMIT) return "Fetch 1 to 5 products per command.";
+      const item = ITEMS[action.item], shop = SHOPS[item.shop];
+      if (!Object.entries(item.cost).every(([k, v]) => marketCount(k, bot) >= v * action.amount)) return "Not enough market resources. Store your gathered resources at Your little market, or ask Pip to gather them.";
+      // One product per round trip keeps ingredients AND the product within five hands slots.
+      for (let i = 0; i < action.amount && generation === botGeneration; i++) {
+        botTask = "Collecting stored ingredients";
+        await navigate(bot, { x: 8, z: 4.1 }, { type: "deposit" });
+        if (generation !== botGeneration || !atMarket(bot)) break;
+        if (!Object.entries(item.cost).every(([k, v]) => G.storage[k] >= v)) { result += " Stored ingredients were used by another trade."; break; }
+        for (const [k, v] of Object.entries(item.cost)) withdraw(k, v, bot);
+        botTask = `Fetching ${item.name.toLowerCase()}`;
+        const report = await navigate(bot, { x: shop.x, z: -4.6 }, { type: "trade", item: action.item, amount: 1 });
+        result += " " + report;
+        if (generation !== botGeneration || !report.startsWith("Fetched")) break;
         botTask = "Bringing it to your market";
-        await navigate(bot, { x: 8, z: 4.1 });
-        bot.userData.carry.visible = false;
+        result += " " + await navigate(bot, { x: 8, z: 4.1 }, { type: "deposit" });
       }
     } else if (action.type === "checkout") {
       botTask = "Helping at checkout";
@@ -1868,7 +1972,12 @@ async function executeAction(action) {
 }
 function getState() {
   return {
-    inventory: { ...G.inventory },
+    inventory: Object.fromEntries(ITEM_KEYS.map(k => [k, marketCount(k, bot)])),
+    playerInventory: { ...G.inventory },
+    botInventory: { ...G.botInventory },
+    storage: { ...G.storage },
+    carryLimit: CARRY_LIMIT,
+    properties: PLOTS.map(({ id, name, cost, requires }) => ({ id, name, cost, requires, unlocked: plotUnlocked(PLOTS.find(p => p.id === id)), owned: G.land.includes(id) })),
     coins: G.coins,
     day: 1 + Math.floor(G.time / 300),
     served: G.served,
@@ -1885,7 +1994,7 @@ function getState() {
         r,
         {
           ready: nodes.filter((n) => n.type === r && nodeReady(n)).length,
-          yieldPerHarvest: 3,
+          yieldPerHarvest: "up to 3, capped by free carrying space",
           regrowthSeconds: r === "grass" ? 24 : 42,
         },
       ]),
@@ -1893,7 +2002,7 @@ function getState() {
     helper: { task: botTask, x: bot.position.x, z: bot.position.z },
     player: { x: player.position.x, z: player.position.z },
     rules:
-      "Shared bag. Harvest amount counts resource patches, each yields 3. Deliver fetches products from the shop using resources, then carries them to your market. Checkout sells fulfilled orders for coins. Coins only buy land. Resources regrow. No real purchases.",
+      "Player and bot each carry at most 5 total items. Inventory is market storage plus bot hands; playerInventory is separate. Harvest amount counts individual items, 1-5, carried to storage. Deliver uses stored resources in safe round trips. Store deposits bot hands at market. Checkout uses storage plus the acting character hands. BuyLand spends coins; lake requires orchard and highland. Fish by holding Capture near a fish in owned lake, then store or sell fish at market. No real purchases.",
   };
 }
 async function sendChat(text) {
@@ -1924,6 +2033,7 @@ function startReplay() {
     return;
   }
   $("journal-dialog").close();
+  stopFishing();
   replay = {
     frames: trail.slice(),
     time: 0,
@@ -2004,10 +2114,13 @@ function moveFromInput(dt) {
 function bindControls() {
   window.addEventListener("resize", resize);
   window.addEventListener("blur", () => {
+    stopFishing(); mouseDown = null;
     movementKeys = {};
     joystickVector = { x: 0, z: 0 };
   });
   document.addEventListener("visibilitychange", () => {
+    stopFishing(); mouseDown = null;
+    joystickVector = { x: 0, z: 0 };
     movementKeys = {};
     save();
     clock.getDelta();
@@ -2031,35 +2144,58 @@ function bindControls() {
       e.preventDefault();
       movementKeys[e.code] = true;
     }
+    if (e.code === "KeyF" && !e.repeat) { e.preventDefault(); beginFishing(); }
     if (e.code === "KeyE" && !e.repeat) interact(nearestInteractable());
   });
   window.addEventListener("keyup", (e) => {
     delete movementKeys[e.code];
+    if (e.code === "KeyF") stopFishing();
   });
-  renderer.domElement.addEventListener("pointerdown", (e) => {
-    mouseDown = { x: e.clientX, y: e.clientY, id: e.pointerId };
+  const canvas = renderer.domElement;
+  const clearPointer = () => { mouseDown = null; canvas.style.cursor = "default"; };
+  canvas.addEventListener("contextmenu", e => e.preventDefault());
+  canvas.addEventListener("pointerdown", e => {
+    if (replay || document.querySelector("dialog[open]") || (e.button !== 0 && e.button !== 1)) return;
+    if (mouseDown) { mouseDown.dragged = true; return; }
+    getTarget(e);
+    const anchor = raycaster.ray.intersectPlane(groundPlane, new THREE.Vector3());
+    if (!anchor) return;
+    mouseDown = { x: e.clientX, y: e.clientY, id: e.pointerId, at: performance.now(), dragged: false, anchor: anchor.clone() };
+    canvas.setPointerCapture(e.pointerId);
   });
-  renderer.domElement.addEventListener("pointerup", (e) => {
-    if (
-      replay ||
-      !mouseDown ||
-      Math.hypot(e.clientX - mouseDown.x, e.clientY - mouseDown.y) > 8
-    )
-      return;
-    mouseDown = null;
+  canvas.addEventListener("pointerup", e => {
+    if (!mouseDown || e.pointerId !== mouseDown.id) return;
+    const down = mouseDown;
+    clearPointer();
+    if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+    if (replay || down.dragged || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 8 || performance.now() - down.at > 350) return;
     const target = getTarget(e);
-    if (target) {
-      interact(target);
-      return;
-    }
-    raycaster.ray.intersectPlane(groundPlane, groundHit);
-    if (canWalk(groundHit.x, groundHit.z)) {
+    if (target) { interact(target); return; }
+    if (raycaster.ray.intersectPlane(groundPlane, groundHit) && canWalk(groundHit.x, groundHit.z)) {
       navigate(player, { x: groundHit.x, z: groundHit.z });
       burst(groundHit.x, groundHit.z, 0xe3edbe);
-    } else
-      toast("That spot is not walkable. Fenced plots can be purchased.", true);
+    } else toast("That spot is not walkable. Fenced plots can be purchased.", true);
   });
+  canvas.addEventListener("pointercancel", clearPointer);
+  canvas.addEventListener("lostpointercapture", clearPointer);
   renderer.domElement.addEventListener("pointermove", (e) => {
+    if (mouseDown && e.pointerId === mouseDown.id) {
+      if (Math.hypot(e.clientX - mouseDown.x, e.clientY - mouseDown.y) > 8 || performance.now() - mouseDown.at >= 350) mouseDown.dragged = true;
+      if (mouseDown.dragged) {
+        getTarget(e);
+        const hit = raycaster.ray.intersectPlane(groundPlane, new THREE.Vector3());
+        if (hit) {
+          const next = cameraPan.clone().add(mouseDown.anchor.clone().sub(hit));
+          next.x = THREE.MathUtils.clamp(next.x, -22, 30);
+          next.z = THREE.MathUtils.clamp(next.z, -16, 20);
+          camera.position.add(next.clone().sub(cameraPan)); cameraPan.copy(next);
+          camera.updateMatrixWorld();
+        }
+        renderer.domElement.style.cursor = "grabbing";
+        $("hover-label").style.display = "none";
+        return;
+      }
+    }
     if (e.pointerType === "touch") return;
     hovered = getTarget(e);
     renderer.domElement.style.cursor = hovered ? "pointer" : "default";
@@ -2099,19 +2235,22 @@ function bindControls() {
     camera.updateProjectionMatrix();
   };
   $("camera-reset").onclick = () => {
+    camera.position.sub(cameraPan); cameraPan.set(0, 0, 0); camera.updateMatrixWorld();
     camera.zoom = 1.06;
     camera.updateProjectionMatrix();
   };
+  updateSoundButton();
   $("sound").onclick = () => {
     soundEnabled = !soundEnabled;
-    $("sound").innerHTML = icons[soundEnabled ? "soundOn" : "soundOff"];
-    $("sound").setAttribute(
-      "aria-label",
-      soundEnabled ? "Mute sound" : "Turn sound on",
-    );
-    $("sound").title = soundEnabled ? "Mute sound" : "Turn sound on";
+    updateSoundButton();
+    try { localStorage.setItem("market-meadow-sound", soundEnabled ? "on" : "off"); }
+    catch { toast("Sound changed for this session; device storage is unavailable.", true); }
     sound("coin");
   };
+  // Browsers require a gesture to resume audio; restoring a preference never autoplays.
+  document.addEventListener("pointerdown", () => {
+    if (soundEnabled && audioContext?.state === "suspended") audioContext.resume().catch(() => {});
+  });
   $("settings").onclick = $("connect-link").onclick = () => ai.openSettings();
   $("help").onclick = () => $("help-dialog").showModal();
   $("help-play").onclick = () => $("help-dialog").close();
@@ -2148,6 +2287,12 @@ function bindControls() {
   $("shop-content").onclick = (e) => {
     const b = e.target.closest("button");
     if (!b) return;
+    if (b.dataset.store) toast(deposit(player));
+    if (b.dataset.withdraw) toast(withdraw(b.dataset.withdraw));
+    if (b.dataset.sellFish && atMarket(player) && marketCount("fish") > 0) {
+      consumeMarket({ fish: 1 }, player); G.coins += 10;
+      record("Sold a fish for 10 coins."); sound("coin"); updateUI(); save();
+    }
     if (b.dataset.trade) {
       const shop = SHOPS[ITEMS[b.dataset.trade].shop];
       if (Math.hypot(player.position.x - shop.x, player.position.z + 4.6) > 2) {
@@ -2212,6 +2357,14 @@ function bindControls() {
     } catch {}
     location.reload();
   };
+  if ($("storage-open")) $("storage-open").onclick = () => interact({ type: "checkout", x: 8, z: 4.1 });
+  if ($("capture-fish")) {
+    const capture = $("capture-fish");
+    capture.addEventListener("pointerdown", e => { e.preventDefault(); capture.setPointerCapture(e.pointerId); beginFishing(); });
+    for (const event of ["pointerup", "pointercancel", "lostpointercapture", "blur"]) capture.addEventListener(event, stopFishing);
+    capture.addEventListener("keydown", e => { if (["Space", "Enter"].includes(e.code)) { e.preventDefault(); if (!e.repeat) beginFishing(); } });
+    capture.addEventListener("keyup", e => { if (["Space", "Enter"].includes(e.code)) stopFishing(); });
+  }
   $("mobile-interact").onclick = () => interact(nearestInteractable());
   let joystickId = null;
   const stickMove = (e) => {
@@ -2255,6 +2408,40 @@ function bindControls() {
       }
     });
 }
+function inLake() {
+  return G.land.includes("lake") && ((player.position.x - 23) / 4.5) ** 2 + ((player.position.z - 5) / 3.6) ** 2 <= 1;
+}
+function stopFishing() {
+  captureHeld = false; fishing = null;
+  if ($("capture-progress")) $("capture-progress").value = 0;
+}
+function beginFishing() {
+  if (replay || document.querySelector("dialog[open]")) return;
+  if (!inLake()) { toast("Buy Willow Lake and wade into its water first.", true); return; }
+  if (countBag(G.inventory) >= CARRY_LIMIT) { toast("Hands full. Store items before fishing.", true); return; }
+  const spot = fishSpots.filter(f => f.cooldown <= 0 && Math.hypot(player.position.x - f.x, player.position.z - f.z) <= 2)
+    .sort((a, b) => Math.hypot(player.position.x - a.x, player.position.z - a.z) - Math.hypot(player.position.x - b.x, player.position.z - b.z))[0];
+  if (!spot) { toast("Move within 2 steps of a visible fish, then hold Capture."); return; }
+  cancelActor(player); captureHeld = true; fishing = { spot, progress: 0 };
+}
+function updateFishing(dt, dialogOpen) {
+  for (const f of fishSpots) {
+    f.cooldown = Math.max(0, f.cooldown - dt);
+    f.art.visible = G.land.includes("lake") && f.cooldown <= 0;
+    f.art.rotation.y = Math.sin(tick * 0.8 + f.x) * 0.3;
+  }
+  if ($("fishing-controls")) $("fishing-controls").hidden = !inLake();
+  if (!captureHeld || !fishing) return;
+  const { spot } = fishing;
+  if (dialogOpen || !inLake() || Math.hypot(player.position.x - spot.x, player.position.z - spot.z) > 2 || countBag(G.inventory) >= CARRY_LIMIT || spot.cooldown > 0) { stopFishing(); return; }
+  fishing.progress += dt;
+  if ($("capture-progress")) $("capture-progress").value = Math.min(1, fishing.progress / 3);
+  if (fishing.progress >= 3) {
+    G.inventory.fish++; spot.cooldown = 20; spot.art.visible = false;
+    record("Caught a fish at Willow Lake."); toast("Fish caught! Store it or sell it at your market for 10 coins.");
+    sound("coin"); burst(spot.x, spot.z, 0x80b8b7); stopFishing(); updateUI(); save();
+  }
+}
 function loop() {
   requestAnimationFrame(loop);
   const dt = Math.min(clock.getDelta(), 0.25);
@@ -2275,6 +2462,7 @@ function loop() {
     G.time += dt;
     const dialogOpen = !!document.querySelector("dialog[open]");
     const manual = !dialogOpen && moveFromInput(dt);
+    updateFishing(dt, dialogOpen);
     if (!manual) updateActor(player, dt);
     updateActor(bot, dt);
     if (
@@ -2380,7 +2568,7 @@ try {
     $("assistant-panel").classList.add("collapsed");
     $("chat-toggle").setAttribute("aria-label", "Expand chat");
     $("context-hint").innerHTML =
-      "<kbd>TAP</kbd> to walk or interact <span>·</span> Drag joystick to move";
+      "<kbd>TAP</kbd> to walk or interact <span>·</span> Hold + drag to pan <span>·</span> Joystick to walk";
   }
   started = true;
   loop();
@@ -2428,6 +2616,8 @@ try {
       playerPath: player.userData.path.length,
       botPath: bot.userData.path.length,
       replaying: !!replay,
+      cameraPan: { x: cameraPan.x, z: cameraPan.z },
+      fishingProgress: fishing?.progress || 0,
     }),
   };
   window.addEventListener("pagehide", save);
