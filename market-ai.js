@@ -473,6 +473,7 @@ The pipe-separated values above mean choose exactly one enum value, not the whol
           throw new MeadowError("The provider rejected the request (HTTP " + response.status + "). Check the request JSON or try again later.");
         }
         if ((response.headers.get("content-type") || "").includes("text/html")) throw new MeadowError("The endpoint returned a web page, not a model response. Check the API URL.");
+        if (!response.body) throw new MeadowError("The provider returned an empty response body. Check the endpoint and responsePath.");
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let bytes = 0, text = "";
@@ -503,7 +504,8 @@ The pipe-separated values above mean choose exactly one enum value, not the whol
         return await Promise.race([perform(), timeout]);
       } catch (error) {
         if (error instanceof MeadowError) throw error;
-        if (timedOut || (error && error.name === "AbortError")) throw new MeadowError("The request timed out after 25 seconds. Try again or play with Offline helper.");
+        if (timedOut) throw new MeadowError("The request timed out after 25 seconds. Try again or play with Offline helper.");
+        if (controller.signal.aborted || error?.name === "AbortError") throw new MeadowError("Request cancelled. No further actions will run.");
         throw new MeadowError("Network or CORS error. Check your connection and URL. The endpoint must allow browser requests; if necessary, use a trusted CORS-enabled proxy, never an untrusted key relay.");
       } finally { clearTimeout(timer); if (activeController === controller) activeController = null; }
     }
@@ -548,6 +550,7 @@ The pipe-separated values above mean choose exactly one enum value, not the whol
             results.push(report);
             message("system", report);
           } catch (_) {
+            if (generation !== planGeneration) break;
             const report = "The helper could not finish: " + actionLabel(action) + ". Any remaining actions were skipped.";
             results.push(report);
             message("system", report);
