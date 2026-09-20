@@ -993,7 +993,8 @@ function buildWorld() {
     );
   fence(land, -0.8, -13, 30);
   fence(land, -16.2, -6.8, 11, false);
-  fence(land, 16.2, -2, 21, false);
+  fence(land, 16.2, -7.75, 9.5, false);
+  fence(land, 16.2, 3.75, 9.5, false);
   for (const x of [-15, 15]) tree(land, x, -11.5, 1.1, 1);
   for (const [x, z] of [
     [-15, 6],
@@ -1509,8 +1510,9 @@ function buyLand(plot) {
   if (!plot || G.land.includes(plot.id)) return "That land is already owned.";
   if (!plotUnlocked(plot)) { toast("Buy both the orchard and Sunstone garden first.", true); return "Buy both original properties first."; }
   if (G.coins < plot.cost) {
-    toast(`Save ${plot.cost - G.coins} more coins to grow here.`, true);
-    return;
+    const message = `Save ${plot.cost - G.coins} more coins to grow here.`;
+    toast(message, true);
+    return message;
   }
   G.coins -= plot.cost;
   G.land.push(plot.id);
@@ -1698,7 +1700,7 @@ function renderShop() {
       )}<p class="shop-note">Resources are your currency here. Save coins to buy new land.</p>`;
   } else if (activePlot) {
     const p = activePlot;
-    root.innerHTML = `<div class="shop-banner">${icons.sprout}</div><div class="eyebrow">A LITTLE MORE ROOM TO GROW</div><h2>${esc(p.name)}</h2><p>${p.id === "lake" ? "A peaceful lake with fish and new resources. Buy it, wade into the water, and hold Capture near a fish." : "A fresh patch of possibility, with six new resource spots that regrow over time."}</p><div class="land-benefits"><span>${icons.wood}2 trees</span><span>${icons.grass}2 grass patches</span><span>${icons.stone}2 stone deposits</span></div><div class="dialog-actions"><strong>${p.cost} coins <small style="color:#929e84;font-weight:400">· You have ${G.coins}</small></strong><button class="primary" data-buy-land="${p.id}" ${G.coins < p.cost || !plotUnlocked(p) ? "disabled" : ""}>Make it yours</button></div>`;
+    root.innerHTML = `<div class="shop-banner">${icons.sprout}</div><div class="eyebrow">A LITTLE MORE ROOM TO GROW</div><h2>${esc(p.name)}</h2><p>${p.id === "lake" ? "A peaceful lake with fish and new resources. Buy it, wade into the water, and hold Capture near a fish." : "A fresh patch of possibility, with six new resource spots that regrow over time."}</p><div class="land-benefits"><span>${icons.wood}${p.id === "lake" ? "1 tree" : "2 trees"}</span><span>${icons.grass}${p.id === "lake" ? "1 grass patch" : "2 grass patches"}</span><span>${icons.stone}${p.id === "lake" ? "1 stone deposit + fishing" : "2 stone deposits"}</span></div><div class="dialog-actions"><strong>${p.cost} coins <small style="color:#929e84;font-weight:400">· You have ${G.coins}</small></strong><button class="primary" data-buy-land="${p.id}" ${G.coins < p.cost || !plotUnlocked(p) ? "disabled" : ""}>Make it yours</button></div>`;
   } else if (activeCustomer) {
     const o = G.orders.find((o) => o.id === activeCustomer);
     if (!o) {
@@ -2067,7 +2069,7 @@ function getTarget(event) {
       target = null;
     while (object) {
       if (!object.visible) visible = false;
-      if (object.userData.target) target = object.userData.target;
+      if (!target && object.userData.target) target = object.userData.target;
       object = object.parent;
     }
     if (visible && target && !target.disabled) return target;
