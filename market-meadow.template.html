@@ -169,7 +169,7 @@
             <div class="suggestions">
               <button data-chat="harvest grass 3">Gather grass</button
               ><button data-chat="checkout">Run checkout</button
-              ><button data-chat="follow me">Follow me</button>
+              ><button data-chat="help">Commands</button>
             </div>
             <form id="chat-form">
               <input
@@ -196,8 +196,14 @@
       <div class="bottom-center">
         <div id="context-hint">
           <kbd>CLICK</kbd> to explore <span>·</span> <kbd>W A S D</kbd> to walk
-          <span>·</span> <kbd>E</kbd> to interact
+          <span>·</span> <kbd>E</kbd> to interact <span>·</span> Hold + drag to pan
         </div>
+        <div id="fishing-controls" class="panel" hidden>
+          <button id="capture-fish" class="primary" aria-describedby="fishing-tip">Hold Capture · F</button>
+          <progress id="capture-progress" max="1" value="0" aria-label="Fish capture progress"></progress>
+          <small id="fishing-tip">Stay within 2 steps of a fish. Hold for 3 seconds.</small>
+        </div>
+        <div class="carry-bar"><span id="carry-status" aria-live="polite">You 0/5 · Pip 0/5 · Stored 0</span><button id="storage-open" title="Walk to your market storage">Market storage</button></div>
         <nav class="inventory panel" aria-label="Product inventory">
           <span class="bag-label" data-icon="backpack"></span
           ><button
@@ -281,9 +287,7 @@
         <div>
           <b>01</b
           ><span
-            ><strong>Gather the good stuff</strong>Click grass, trees, and
-            stones. Your character walks over to harvest. They regrow for
-            free.</span
+            ><strong>Gather the good stuff</strong>Tap grass to cut it, a tree to chop it, or a stone to break it. Your character walks over and works automatically. Each spot yields up to 3; anything you cannot carry stays there. Resources regrow for free.</span
           >
         </div>
         <div>
@@ -291,7 +295,7 @@
           ><span
             ><strong>A fair little trade</strong>Visit Farm & Field for eggs and
             tomatoes, Butcher's Corner for meat, or Milk & Honey for milk and
-            candy. Pay with resources, not coins.</span
+            candy. Pay with the resources in your hands, not coins. Each character carries only 5 items total.</span
           >
         </div>
         <div>
@@ -299,21 +303,23 @@
           ><span
             ><strong>Make someone's day</strong>Collect the products a customer
             wants. Click their order or the green checkout stall to sell them
-            and collect coins.</span
+            and collect coins. At Your little market, store everything or take stored items back one at a time. Orders can use market storage.</span
           >
         </div>
         <div>
           <b>04</b
           ><span
             ><strong>Room for more</strong>Buy fenced plots with your earnings.
-            New land brings new resource nodes. Ask Pip to harvest, fetch items,
-            or handle checkout.</span
+            After buying the orchard (65 coins) and Sunstone garden (120 coins), pan right to unlock Willow Lake (200 coins). Buy it, wade into the water near a fish, and hold Capture or F for 3 seconds. Store fish or sell them for 10 coins each.</span
           >
         </div>
       </div>
+      <h3>Offline commands — no API key needed</h3>
+      <p><code>cut tree 3</code> · <code>cut grass 2</code> · <code>break stone 2</code> · <code>buy 2 eggs</code> · <code>store all</code> · <code>buy orchard</code> · <code>buy highland</code> · <code>buy lake</code> · <code>checkout</code> · <code>follow me</code> · <code>stop</code>.</p>
+      <p>Use 1–5 individual items per command; join up to 3 commands with “then”. Pip brings gathered items to storage and uses stored resources for trades. Your hands stay separate. Ask <code>help</code>, <code>storage</code>, or <code>how to fish</code> for guidance.</p>
       <p class="help-controls">
         Click to walk · WASD / arrows to move · E to interact · Scroll to
-        zoom<br />Touch: tap the world, or use the joystick. Progress saves
+        zoom<br />Hold + drag the world to pan; compass resets the view.<br />Touch: tap a resource to harvest, or use the joystick to walk. Progress saves
         automatically.
       </p>
       <div class="dialog-actions">
